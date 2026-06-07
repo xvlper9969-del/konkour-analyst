@@ -1,0 +1,162 @@
+// js/history.js (hardened)
+
+import { getUniqueDates, getSessionsByDate, getPlannerByDate, deleteSession } from './db.js';
+import { minsToHHMM, calcDurationMins, showToast, esc } from './utils.js';
+
+// Track open/closed state across re-renders
+let _openDates = new Set();
+
+export async function renderHistory() {
+const panel = document.getElementById('tab-history');
+panel.innerHTML = <div class="loading-spinner"><div class="spinner"></div></div>;
+
+const dates = await getUniqueDates();
+
+if (!dates || dates.length === 0) {
+panel.innerHTML = <div class="empty-state" style="padding-top:60px">
+      <div class="empty-state-icon">📋</div>
+      <div class="empty-state-text">No history yet.<br>Start logging sessions to build your record.</div>
+    </div>;
+return;
+}
+
+panel.innerHTML = 
+    <div style="padding:14px 14px 8px">
+      <div class="section-label">${dates.length} day${dates.length !== 1 ? 's' : ''} logged</div>
+    </div>
+    <div id="history-list"></div>
+  ;
+
+const listEl = document.getElementById('history-list');
+
+// Fetch all data in parallel for speed
+const allData = await Promise.all(
+dates.map(date =>
+Promise.all([
+getSessionsByDate(date),
+getPlannerByDate(date),
+]).then(([sessions, tasks]) => ({ date, sessions, tasks }))
+)
+);
+
+allData.forEach(({ date, sessions, tasks }) => {
+listEl.appendChild(buildDateGroup(date, sessions, tasks));
+});
+
+attachHistoryEvents();
+}
+
+function buildDateGroup(date, rawSessions, rawTasks) {
+const sessions = Array.isArray(rawSessions) ? rawSessions : [];
+const tasks    = Array.isArray(rawTasks)    ? rawTasks    : [];
+
+const totalMins = sessions.reduce((acc, s) => acc + calcDurationMins(s.startTime, s.endTime), 0);
+const totalQ    = sessions.reduce((acc, s) => acc + (Number(s.questionCount) || 0), 0);
+const done      = tasks.filter(t => t.completed).length;
+const isOpen    = _openDates.has(date);
+
+const sessionsHTML = [...sessions]
+.sort((a, b) => (a.startTime || '').localeCompare(b.startTime || ''))
+.map(s => {
+const dur = calcDurationMins(s.startTime, s.endTime);
+return 
+        <div class="history-session-row">
+          <div class="history-session-type-dot"
+               style="background:${typeColor(s.activityType)}"></div>
+          <div class="history-session-info">
+            <div class="history-session-subject">${esc(s.subject)}</div>
+            <div class="history-session-topic">
+              ${esc(s.topic)}${s.questionCount ?  · ${Number(s.questionCount)}Q : ''}
+            </div>
+            ${s.notes ? <div class="history-session-notes">${esc(s.notes)}</div> : ''}
+          </div>
+          <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;flex-shrink:0">
+            <div class="history-session-meta">${esc(s.startTime)}–${esc(s.endTime)}</div>
+            <div style="font-family:var(--font-mono);font-size:0.72rem;color:var(--accent)">
+              ${minsToHHMM(dur)}
+            </div>
+            <button class="btn-icon-danger" data-del-session="${esc(s.id)}"
+                    aria-label="Delete session">✕</button>
+          </div>
+        </div>;
+}).join('');
+
+const plannerHTML = tasks.length > 0 ? 
+    <div class="history-planner-list">
+      <div class="history-planner-title">Planned Tasks</div>
+      ${tasks.map(t => 
+<div class="history-plan-row">
+<div class="history-plan-check ${t.completed ? 'done' : ''}">
+${t.completed ? '✓' : ''}
+          </div>
+          <div><span style="font-weight:600">${esc(t.subject)}</span> · ${esc(t.topic)}</div>
+</div>).join('')}
+    </div> : '';
+
+// Build summary line
+const parts = [];
+if (totalMins > 0) parts.push(minsToHHMM(totalMins));
+if (totalQ    > 0) parts.push(${totalQ} Q);
+if (tasks.length  > 0) parts.push(${done}/${tasks.length} tasks);
+else parts.push(${sessions.length} session${sessions.length !== 1 ? 's' : ''});
+const summary = parts.join(' · ');
+
+const div = document.createElement('div');
+div.className    = 'history-date-group';
+div.dataset.date = date;
+div.innerHTML    = 
+    <div class="history-date-header" data-toggle-date="${esc(date)}">
+      <div class="history-date-left">
+        <div>
+          <div class="history-date-label">${esc(date)}</div>
+          <div class="history-date-summary">${summary}</div>
+        </div>
+      </div>
+      <div class="history-chevron ${isOpen ? 'open' : ''}"
+           id="chevron-${esc(date)}">▾</div>
+    </div>
+    <div class="history-detail ${isOpen ? 'open' : ''}" id="detail-${esc(date)}">
+      ${sessionsHTML || <div style="padding:8px 0;font-size:0.8rem;color:var(--text-muted)">No sessions logged</div>}
+      ${plannerHTML}
+    </div>
+  ;
+return div;
+}
+
+function typeColor(type) {
+const m = {
+study  : 'var(--accent)',
+review : 'var(--purple)',
+test   : 'var(--orange)',
+exam   : 'var(--red)',
+};
+return m[type] || 'var(--accent)';
+}
+
+function attachHistoryEvents() {
+const listEl = document.getElementById('history-list');
+if (!listEl) return;
+
+// Single delegated listener on the list container
+listEl.addEventListener('click', async (e) => {
+// ── Delete session ────────────────────────────────────────────────────
+const delBtn = e.target.closest('[data-del-session]');
+if (delBtn) {
+// Stop propagation so the toggle-date header above doesn't fire
+e.stopPropagation();
+const id = delBtn.dataset.delSession;
+if (!confirm('Delete this session? This cannot be undone.')) return;
+try {
+await deleteSession(id);
+showToast('Session deleted', 'info');
+// Re-render and restore open state
+renderHistory();
+} catch (err) {
+console.error('Delete session error:', err);
+showToast('Failed to delete session', 'error');
+}
+return;
+}
+
+});
+}
