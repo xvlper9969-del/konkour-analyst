@@ -1,0 +1,277 @@
+// js/exportPdf.js (hardened)
+
+import { getSessionsByDate, getPlannerByDate, getMeta, setMeta } from './db.js';
+import { today, minsToHHMM, calcDurationMins, formatDateFull, showToast, esc } from './utils.js';
+
+// No module-level mutable state — all state lives in closure per render
+export async function renderExport() {
+const panel    = document.getElementById('tab-export');
+const todayStr = today();
+const userName = (await getMeta('userName')) || '';
+
+// Reset previewData on every render
+let previewData = null;
+
+panel.innerHTML = `
+<div class="export-section">
+
+`;
+
+// ── Wire up buttons (closures capture previewData ref via object wrapper) ──
+const state = { preview: null };
+
+document.getElementById('preview-btn').addEventListener('click', async () => {
+state.preview = await generatePreview();
+if (state.preview) {
+document.getElementById('pdf-step').style.display = 'block';
+}
+});
+
+document.getElementById('generate-pdf-btn').addEventListener('click', () => {
+if (!state.preview) {
+showToast('Generate preview first', 'error');
+return;
+}
+exportPDF(state.preview);
+});
+}
+
+// ── Preview generator ─────────────────────────────────────────────────────────
+
+async function generatePreview() {
+const dateEl = document.getElementById('export-date');
+const nameEl = document.getElementById('export-name');
+
+const date = (dateEl?.value || '').trim();
+const name = (nameEl?.value || '').trim();
+
+if (!date) {
+showToast('Please select a date', 'error');
+return null;
+}
+
+// Persist name to meta
+if (name) await setMeta('userName', name);
+
+const previewBtn = document.getElementById('preview-btn');
+if (previewBtn) { previewBtn.disabled = true; previewBtn.textContent = 'Loading…'; }
+
+try {
+const [sessions, tasks] = await Promise.all([
+getSessionsByDate(date),
+getPlannerByDate(date),
+]);
+
+} catch (err) {
+console.error('Preview error:', err);
+showToast('Failed to generate preview', 'error');
+return null;
+} finally {
+if (previewBtn) { previewBtn.disabled = false; previewBtn.textContent = 'Generate Preview'; }
+}
+}
+
+// ── PDF export (print dialog) ─────────────────────────────────────────────────
+
+function exportPDF(data) {
+const { date, name, sessions, tasks, totalMins, totalQ, completed, remaining } = data;
+const sorted = [...sessions].sort((a, b) => (a.startTime || '').localeCompare(b.startTime || ''));
+
+// All string values escaped for safe HTML embedding
+const pdfHTML = `<!DOCTYPE html>
+
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Study Report — ${esc(date)}</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:wght@300;400;500;600&display=swap');
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'DM Sans', sans-serif;
+    color: #1a1a2e;
+    background: #fff;
+    padding: 40px;
+    max-width: 700px;
+    margin: 0 auto;
+  }
+  h1 {
+    font-family: 'Space Mono', monospace;
+    font-size: 22px;
+    color: #1a56db;
+    margin-bottom: 4px;
+  }
+  .meta { font-size: 12px; color: #666; margin-bottom: 28px; font-family: 'Space Mono', monospace; }
+  .stats {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 12px;
+    margin-bottom: 28px;
+  }
+  .stat {
+    border: 1.5px solid #e2e8f0;
+    border-radius: 10px;
+    padding: 14px;
+    text-align: center;
+  }
+  .stat-label {
+    font-size: 10px;
+    color: #888;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin-bottom: 5px;
+  }
+  .stat-value {
+    font-family: 'Space Mono', monospace;
+    font-size: 18px;
+    font-weight: 700;
+    color: #1a1a2e;
+  }
+  .section-title {
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    color: #888;
+    border-bottom: 1.5px solid #e2e8f0;
+    padding-bottom: 6px;
+    margin-bottom: 12px;
+  }
+  .timeline { margin-bottom: 28px; }
+  .tl-item {
+    display: flex;
+    gap: 14px;
+    padding: 10px 0;
+    border-bottom: 1px solid #f0f4f8;
+    align-items: flex-start;
+  }
+  .tl-time {
+    font-family: 'Space Mono', monospace;
+    font-size: 10px;
+    color: #888;
+    min-width: 90px;
+    padding-top: 3px;
+  }
+  .tl-subject { font-size: 13px; font-weight: 600; }
+  .tl-topic   { font-size: 11px; color: #666; margin-top: 2px; }
+  .tl-badge {
+    display: inline-block;
+    padding: 2px 7px;
+    border-radius: 12px;
+    font-size: 9px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-left: 6px;
+    background: #ebf5ff;
+    color: #1a56db;
+    vertical-align: middle;
+  }
+  .task-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 0;
+    border-bottom: 1px solid #f0f4f8;
+    font-size: 12px;
+  }
+  .task-check {
+    width: 16px;
+    height: 16px;
+    border-radius: 4px;
+    border: 1.5px solid #ccc;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 10px;
+    font-weight: 700;
+    color: #22c55e;
+    flex-shrink: 0;
+  }
+  .task-check.done { background: #f0fdf4; border-color: #22c55e; }
+  footer {
+    margin-top: 40px;
+    font-size: 10px;
+    color: #bbb;
+    text-align: center;
+    font-family: 'Space Mono', monospace;
+  }
+  @media print { body { padding: 20px; } }
+</style>
+</head>
+<body>
+<h1>Daily Study Report</h1>
+<div class="meta">${formatDateFull(date)}${name ? ` · ${esc(name)}` : ''}</div>
+
+<div class="stats">
+  <div class="stat">
+    <div class="stat-label">Study Time</div>
+    <div class="stat-value">${minsToHHMM(totalMins)}</div>
+  </div>
+  <div class="stat">
+    <div class="stat-label">Questions</div>
+    <div class="stat-value">${totalQ}</div>
+  </div>
+  <div class="stat">
+    <div class="stat-label">Tasks Done</div>
+    <div class="stat-value">${completed}</div>
+  </div>
+  <div class="stat">
+    <div class="stat-label">Remaining</div>
+    <div class="stat-value">${remaining}</div>
+  </div>
+</div>
+
+<div class="timeline">
+  <div class="section-title">Session Timeline (${sorted.length} session${sorted.length !== 1 ? 's' : ''})</div>
+  ${sorted.length > 0
+    ? sorted.map(s => {
+        const dur = calcDurationMins(s.startTime, s.endTime);
+        return `
+          <div class="tl-item">
+            <div class="tl-time">
+              ${esc(s.startTime)}–${esc(s.endTime)}<br>${minsToHHMM(dur)}
+            </div>
+            <div>
+              <div class="tl-subject">
+                ${esc(s.subject)}
+                <span class="tl-badge">${esc(s.activityType)}</span>
+              </div>
+              <div class="tl-topic">
+                ${esc(s.topic)}${s.questionCount ? ` · ${Number(s.questionCount)} questions` : ''}
+                ${s.notes ? `<br><i>${esc(s.notes)}</i>` : ''}
+              </div>
+            </div>
+          </div>`;
+      }).join('')
+    : '<div style="color:#bbb;font-size:12px;padding:12px 0">No sessions recorded for this date</div>'}
+</div>
+
+${tasks.length > 0 ? `
+
+<div>
+  <div class="section-title">Planned Tasks — ${completed} of ${tasks.length} completed</div>
+  ${tasks.map(t => `
+    <div class="task-row">
+      <div class="task-check ${t.completed ? 'done' : ''}">${t.completed ? '✓' : ''}</div>
+      <div><b>${esc(t.subject)}</b> — ${esc(t.topic)}</div>
+    </div>`).join('')}
+</div>` : ''}
+
+<footer>Generated by StudyTrack · ${new Date().toLocaleString()}</footer>
+</body>
+</html>`;
+
+const win = window.open('', '_blank');
+if (win) {
+win.document.write(pdfHTML);
+win.document.close();
+// Slight delay so browser finishes rendering before print dialog
+setTimeout(() => {
+win.focus();
+win.print();
+}, 800);
+} else {
+showToast('Please allow pop-ups to export PDF', 'error');
+}
+}
