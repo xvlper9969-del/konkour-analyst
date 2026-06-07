@@ -1,0 +1,103 @@
+// js/app.js — Main entry point (hardened)
+
+import { openDB } from './db.js';
+import { renderDashboard }   from './dashboard.js';
+import { renderAddSession }  from './addSession.js';
+import { renderPlanner }     from './planner.js';
+import { renderAnalysis }    from './analysis.js';
+import { renderExport }      from './exportPdf.js';
+import { renderHistory }     from './history.js';
+import { today, formatDate } from './utils.js';
+
+const TABS = ['dashboard', 'add', 'planner', 'analysis', 'export', 'history'];
+let currentTab = '';   // empty = nothing rendered yet
+let navListenersAttached = false;
+
+const renderers = {
+dashboard : renderDashboard,
+add       : renderAddSession,
+planner   : renderPlanner,
+analysis  : renderAnalysis,
+export    : renderExport,
+history   : renderHistory,
+};
+
+async function init() {
+try {
+await openDB();
+updateHeaderDate();
+setupNav();          // attach nav listeners ONCE
+await switchTab('dashboard');
+} catch (err) {
+console.error('DB init failed:', err);
+document.getElementById('main-content').innerHTML = 
+      <div class="empty-state" style="padding-top:80px">
+        <div class="empty-state-icon">⚠️</div>
+        <div class="empty-state-text">
+          Failed to open database.<br>
+          <small style="color:var(--text-muted)">${err && err.message ? err.message : 'Unknown error'}</small><br><br>
+          Please refresh the page.
+        </div>
+      </div>;
+}
+}
+
+function updateHeaderDate() {
+const el = document.getElementById('header-date');
+if (el) el.textContent = formatDate(today());
+}
+
+function setupNav() {
+if (navListenersAttached) return;
+navListenersAttached = true;
+
+document.querySelectorAll('.nav-item').forEach(item => {
+item.addEventListener('click', () => {
+const tab = item.dataset.tab;
+if (tab) switchTab(tab);
+});
+});
+}
+
+export async function switchTab(tabId) {
+if (!TABS.includes(tabId)) return;
+
+// Always re-render the tab (needed so dashboard refreshes after adding a session)
+currentTab = tabId;
+
+// Update nav active state
+document.querySelectorAll('.nav-item').forEach(item => {
+item.classList.toggle('active', item.dataset.tab === tabId);
+});
+
+// Show correct panel
+document.querySelectorAll('.tab-panel').forEach(panel => {
+panel.classList.toggle('active', panel.id === tab-${tabId});
+});
+
+// Scroll panel to top on tab change
+const panel = document.getElementById(tab-${tabId});
+if (panel) panel.scrollTop = 0;
+
+// Render with per-tab error boundary
+try {
+if (renderers[tabId]) await rendererstabId;
+} catch (err) {
+console.error(Error rendering tab "${tabId}":, err);
+if (panel) {
+panel.innerHTML = 
+        <div class="empty-state" style="padding-top:60px">
+          <div class="empty-state-icon">⚠️</div>
+          <div class="empty-state-text">
+            Something went wrong loading this tab.<br>
+            <small style="color:var(--text-muted)">${err && err.message ? err.message : ''}</small>
+          </div>
+        </div>;
+}
+}
+}
+
+// Expose for cross-module navigation (e.g. after save → go to dashboard)
+window.switchTab = switchTab;
+
+document.addEventListener('DOMContentLoaded', init);
