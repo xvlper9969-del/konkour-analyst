@@ -1,0 +1,135 @@
+// js/utils.js — Shared utilities (hardened)
+
+export function uuid() {
+if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+return crypto.randomUUID();
+}
+// Fallback for older WebView
+return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+const r = Math.random() * 16 | 0;
+return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
+});
+}
+
+// Always returns local YYYY-MM-DD, never UTC-shifted
+export function today() {
+const d = new Date();
+return localDateStr(d);
+}
+
+export function localDateStr(d) {
+const y  = d.getFullYear();
+const m  = String(d.getMonth() + 1).padStart(2, '0');
+const dd = String(d.getDate()).padStart(2, '0');
+return ${y}-${m}-${dd};
+}
+
+export function formatDate(dateStr) {
+const d = parseDateLocal(dateStr);
+return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+}
+
+export function formatDateFull(dateStr) {
+const d = parseDateLocal(dateStr);
+return d.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+}
+
+// Parse YYYY-MM-DD as LOCAL midnight, not UTC (avoids off-by-one on timezones)
+export function parseDateLocal(dateStr) {
+const [y, m, d] = dateStr.split('-').map(Number);
+return new Date(y, m - 1, d);
+}
+
+export function calcDurationMins(start, end) {
+if (!start || !end || typeof start !== 'string' || typeof end !== 'string') return 0;
+const [sh, sm] = start.split(':').map(Number);
+const [eh, em] = end.split(':').map(Number);
+if (isNaN(sh) || isNaN(sm) || isNaN(eh) || isNaN(em)) return 0;
+const diff = (eh * 60 + em) - (sh * 60 + sm);
+return diff > 0 ? diff : 0;
+}
+
+export function minsToHHMM(mins) {
+const n = Math.round(Number(mins) || 0);
+if (n <= 0) return '0m';
+const h = Math.floor(n / 60);
+const m = n % 60;
+if (h === 0) return ${m}m;
+if (m === 0) return ${h}h;
+return ${h}h ${m}m;
+}
+
+export function getWeekDates(baseDate) {
+const d   = parseDateLocal(baseDate);
+const day = d.getDay(); // 0 = Sunday
+const sunday = new Date(d);
+sunday.setDate(d.getDate() - day);
+return Array.from({ length: 7 }, (_, i) => {
+const nd = new Date(sunday);
+nd.setDate(sunday.getDate() + i);
+return localDateStr(nd);
+});
+}
+
+export function getDayName(dateStr) {
+const d = parseDateLocal(dateStr);
+return ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][d.getDay()];
+}
+
+export function getDayFullName(dateStr) {
+const d = parseDateLocal(dateStr);
+return ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'][d.getDay()];
+}
+
+export function getDayNum(dateStr) {
+return parseDateLocal(dateStr).getDate();
+}
+
+export function getLast30Days() {
+const days = [];
+for (let i = 29; i >= 0; i--) {
+const d = new Date();
+d.setDate(d.getDate() - i);
+days.push(localDateStr(d));
+}
+return days;
+}
+
+export function getCurrentTime() {
+const now = new Date();
+const h = String(now.getHours()).padStart(2, '0');
+const m = String(now.getMinutes()).padStart(2, '0');
+return ${h}:${m};
+}
+
+// ── Toast ─────────────────────────────────────────────────────────────────────
+export function showToast(msg, type = 'info', duration = 2800) {
+const container = document.getElementById('toast-container');
+if (!container) return;
+const el = document.createElement('div');
+el.className = toast ${type};
+el.textContent = msg;
+container.appendChild(el);
+setTimeout(() => {
+el.style.opacity = '0';
+el.style.transform = 'translateY(8px)';
+el.style.transition = '0.25s ease';
+setTimeout(() => { if (el.parentNode) el.remove(); }, 300);
+}, duration);
+}
+
+// ── Escape HTML to prevent XSS in innerHTML interpolation ────────────────────
+export function esc(str) {
+if (str == null) return '';
+return String(str)
+.replace(/&/g, '&amp;')
+.replace(/</g, '&lt;')
+.replace(/>/g, '&gt;')
+.replace(/"/g, '&quot;')
+.replace(/'/g, '&#39;');
+}
+
+export function activityColor(type) {
+const m = { study: 'var(--accent)', review: 'var(--purple)', test: 'var(--orange)', exam: 'var(--red)' };
+return m[type] || 'var(--accent)';
+}
