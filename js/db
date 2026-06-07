@@ -1,0 +1,106 @@
+// js/db.js — IndexedDB Layer (hardened)
+
+const DB_NAME = 'study_app_db';
+const DB_VERSION = 1;
+
+let _db = null;
+// Prevent concurrent open calls from creating multiple requests
+let _openPromise = null;
+
+export function openDB() {
+if (_db) return Promise.resolve(_db);
+if (_openPromise) return _openPromise;
+
+_openPromise = new Promise((resolve, reject) => {
+const req = indexedDB.open(DB_NAME, DB_VERSION);
+
+});
+
+return _openPromise;
+}
+
+// Safe transaction helper — ensures DB is open before creating transaction
+async function getDB() {
+if (!_db) await openDB();
+return _db;
+}
+
+function storeRW(db, store) {
+return db.transaction(store, 'readwrite').objectStore(store);
+}
+
+function storeRO(db, store) {
+return db.transaction(store, 'readonly').objectStore(store);
+}
+
+// ── Generic helpers ────────────────────────────────────────────────────────────
+
+function promisifyReq(req) {
+return new Promise((resolve, reject) => {
+req.onsuccess = () => resolve(req.result);
+req.onerror  = () => reject(req.error);
+});
+}
+
+async function dbGetAll(store) {
+const db = await getDB();
+return promisifyReq(storeRO(db, store).getAll());
+}
+
+async function dbGetByIndex(store, index, value) {
+const db = await getDB();
+return promisifyReq(storeRO(db, store).index(index).getAll(value));
+}
+
+async function dbPut(store, item) {
+const db = await getDB();
+return promisifyReq(storeRW(db, store).put(item));
+}
+
+async function dbDelete(store, id) {
+const db = await getDB();
+return promisifyReq(storeRW(db, store).delete(id));
+}
+
+async function dbGet(store, key) {
+const db = await getDB();
+return promisifyReq(storeRO(db, store).get(key));
+}
+
+// ── SESSIONS ───────────────────────────────────────────────────────────────────
+export async function getAllSessions()          { return dbGetAll('sessions'); }
+export async function getSessionsByDate(date)  { return dbGetByIndex('sessions', 'date', date); }
+export async function addSession(session)      { return dbPut('sessions', session); }
+export async function deleteSession(id)        { return dbDelete('sessions', id); }
+
+export async function getSessionsInRange(startDate, endDate) {
+const all = await getAllSessions();
+return all.filter(s => s.date >= startDate && s.date <= endDate);
+}
+
+export async function getUniqueDates() {
+const all = await getAllSessions();
+const dates = [...new Set(all.map(s => s.date))].sort().reverse();
+return dates;
+}
+
+// ── PLANNER ───────────────────────────────────────────────────────────────────
+export async function getAllPlanner()           { return dbGetAll('planner'); }
+export async function getPlannerByDate(date)   { return dbGetByIndex('planner', 'date', date); }
+export async function addPlannerTask(task)     { return dbPut('planner', task); }
+export async function updatePlannerTask(task)  { return dbPut('planner', task); }
+export async function deletePlannerTask(id)    { return dbDelete('planner', id); }
+
+// ── SUBJECTS ──────────────────────────────────────────────────────────────────
+export async function getAllSubjects()  { return dbGetAll('subjects'); }
+export async function addSubject(s)    { return dbPut('subjects', s); }
+export async function deleteSubject(id){ return dbDelete('subjects', id); }
+
+// ── APP META ──────────────────────────────────────────────────────────────────
+export async function getMeta(key) {
+const r = await dbGet('app_meta', key);
+return r ? r.value : null;
+}
+export async function setMeta(key, value) {
+return dbPut('app_meta', { key, value });
+}
