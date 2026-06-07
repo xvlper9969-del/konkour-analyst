@@ -1,0 +1,121 @@
+// js/addSession.js (hardened)
+
+import { getAllSubjects, addSubject, addSession } from './db.js';
+import { uuid, today, getCurrentTime, calcDurationMins, minsToHHMM, showToast, esc } from './utils.js';
+
+// Module-level state — reset on every render call
+let _subjects       = [];
+let _selectedActivity = 'study';
+// Track the document-level click listener so we can remove it before re-adding
+let _docClickHandler = null;
+
+export async function renderAddSession() {
+// Reset module state cleanly each time this tab is rendered
+_subjects        = await getAllSubjects();
+_selectedActivity = 'study';
+
+// Remove previous document-level listener to prevent accumulation
+if (_docClickHandler) {
+document.removeEventListener('click', _docClickHandler);
+_docClickHandler = null;
+}
+
+const panel     = document.getElementById('tab-add');
+const todayStr  = today();
+
+panel.innerHTML = `
+<div class="add-session-wrap">
+<div class="add-session-header">
+<div class="add-session-title">Log Session</div>
+<div class="add-session-sub">Record what you studied</div>
+</div>
+
+`;
+
+initSubjectInput();
+initActivityBtns();
+initTimePicker();
+initSave();
+}
+
+// ── Subject autocomplete ──────────────────────────────────────────────────────
+function initSubjectInput() {
+const input    = document.getElementById('sess-subject');
+const dropdown = document.getElementById('subject-dropdown');
+const wrap     = document.getElementById('sess-subject-wrap');
+
+function renderDropdown(filter) {
+const q        = (filter || '').toLowerCase().trim();
+const filtered = _subjects.filter(s => s.name.toLowerCase().includes(q));
+const hasExact = _subjects.some(s => s.name.toLowerCase() === q);
+
+}
+
+function openDropdown() {
+renderDropdown(input.value);
+dropdown.classList.remove('hidden');
+}
+
+function closeDropdown() {
+dropdown.classList.add('hidden');
+}
+
+input.addEventListener('focus', openDropdown);
+input.addEventListener('input', openDropdown);
+
+// Document-level handler — stored so we can remove it on next render
+_docClickHandler = (e) => {
+if (!wrap.contains(e.target)) closeDropdown();
+};
+document.addEventListener('click', _docClickHandler);
+}
+
+// ── Activity type buttons ─────────────────────────────────────────────────────
+function initActivityBtns() {
+const grid = document.getElementById('activity-grid');
+if (!grid) return;
+
+grid.addEventListener('click', (e) => {
+const btn = e.target.closest('.activity-btn');
+if (!btn) return;
+
+});
+}
+
+// ── Time picker / duration ────────────────────────────────────────────────────
+function initTimePicker() {
+const startEl = document.getElementById('sess-start');
+const endEl   = document.getElementById('sess-end');
+const durEl   = document.getElementById('duration-display');
+
+// Default start = now, leave end blank
+startEl.value = getCurrentTime();
+
+function update() {
+const mins = calcDurationMins(startEl.value, endEl.value);
+durEl.textContent = mins > 0 ? minsToHHMM(mins) : '— not set —';
+}
+
+startEl.addEventListener('change', update);
+endEl.addEventListener('change', update);
+// Also fire on input for mobile pickers that don't fire change until blur
+startEl.addEventListener('input', update);
+endEl.addEventListener('input', update);
+}
+
+// ── Save ─────────────────────────────────────────────────────────────────────
+function initSave() {
+const saveBtn = document.getElementById('save-session-btn');
+if (!saveBtn) return;
+
+saveBtn.addEventListener('click', async () => {
+const date      = (document.getElementById('sess-date').value || '').trim();
+const subject   = (document.getElementById('sess-subject').value || '').trim();
+const topic     = (document.getElementById('sess-topic').value || '').trim();
+const startTime = (document.getElementById('sess-start').value || '').trim();
+const endTime   = (document.getElementById('sess-end').value || '').trim();
+const notes     = (document.getElementById('sess-notes').value || '').trim();
+const qcountRaw = (document.getElementById('sess-qcount').value || '').trim();
+
+});
+}
