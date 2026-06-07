@@ -1,0 +1,274 @@
+// js/planner.js (hardened)
+
+import {
+getAllPlanner, addPlannerTask, updatePlannerTask, deletePlannerTask,
+getAllSubjects, addSubject,
+} from './db.js';
+import {
+uuid, today, getWeekDates, getDayName, getDayFullName, getDayNum,
+parseDateLocal, localDateStr, showToast, esc,
+} from './utils.js';
+
+// Module-level state
+let currentWeekBase = today();
+let allTasks        = [];
+let allSubjects     = [];
+// Stored document-level listener for the subject dropdown
+let _plannerDocClick = null;
+
+export async function renderPlanner() {
+allTasks    = await getAllPlanner();
+allSubjects = await getAllSubjects();
+
+if (_plannerDocClick) {
+document.removeEventListener('click', _plannerDocClick);
+_plannerDocClick = null;
+}
+
+const panel = document.getElementById('tab-planner');
+panel.innerHTML = buildPlannerHTML();
+attachPlannerEvents();
+}
+
+// ── HTML builders ─────────────────────────────────────────────────────────────
+
+function buildPlannerHTML() {
+const dates      = getWeekDates(currentWeekBase);
+const startLabel = fmtShort(dates[0]);
+const endLabel   = fmtShort(dates[6]);
+const todayStr   = today();
+
+const colsHTML = dates.map(date => {
+const tasks   = allTasks.filter(t => t.date === date);
+const isToday = date === todayStr;
+
+}).join('');
+
+const weekTasks = allTasks.filter(t => dates.includes(t.date));
+const listHTML  = buildWeekTaskList(weekTasks);
+
+return 
+    <div class="planner-week-nav">
+      <button class="week-nav-btn" id="week-prev" aria-label="Previous week">‹</button>
+      <span class="week-label">${startLabel} – ${endLabel}</span>
+      <button class="week-nav-btn" id="week-next" aria-label="Next week">›</button>
+    </div>
+    <div class="planner-grid">${colsHTML}</div>
+    <div style="padding:0 14px 14px">
+      <div class="section-label" style="margin-bottom:10px">Planned Tasks This Week</div>
+      <div id="planner-task-list">${listHTML}</div>
+    </div>
+    ${buildModalHTML()}
+  ;
+}
+
+function buildWeekTaskList(weekTasks) {
+if (weekTasks.length === 0) {
+return <div class="empty-state" style="padding:20px">
+      <div class="empty-state-icon">📅</div>
+      <div class="empty-state-text">No tasks planned. Tap any day column to add.</div>
+    </div>;
+}
+// Sort by date then createdAt
+const sorted = [...weekTasks].sort((a, b) => {
+if (a.date !== b.date) return a.date.localeCompare(b.date);
+return (a.createdAt || 0) - (b.createdAt || 0);
+});
+
+return sorted.map(t => 
+    <div class="session-item" style="margin-bottom:6px">
+      <div class="custom-check ${t.completed ? 'checked' : ''}"
+           data-list-toggle="${esc(t.id)}" title="Toggle complete"></div>
+      <div class="session-item-info">
+        <div class="session-item-subject">${esc(t.subject)}</div>
+        <div class="session-item-meta">${esc(t.topic)} · ${getDayName(t.date)} ${getDayNum(t.date)}</div>
+      </div>
+      <button class="btn-icon-danger" data-list-delete="${esc(t.id)}"
+              title="Delete task" aria-label="Delete task">✕</button>
+    </div>).join('');
+}
+
+function buildModalHTML() {
+return `
+<div class="modal-overlay hidden" id="planner-modal" role="dialog" aria-modal="true">
+<div class="modal-sheet">
+<div class="modal-handle"></div>
+<div class="modal-header">
+<span class="modal-title" id="planner-modal-title">Add Task</span>
+<button class="modal-close" id="planner-modal-close" aria-label="Close">✕</button>
+</div>
+<div class="modal-body">
+<input type="hidden" id="planner-task-id">
+<input type="hidden" id="planner-task-date">
+
+}
+
+// ── Event wiring ──────────────────────────────────────────────────────────────
+
+function attachPlannerEvents() {
+// Week navigation
+document.getElementById('week-prev').addEventListener('click', () => shiftWeek(-7));
+document.getElementById('week-next').addEventListener('click', () => shiftWeek(+7));
+
+// Grid: delegate from the grid container to avoid event conflicts
+const grid = document.querySelector('.planner-grid');
+if (grid) {
+grid.addEventListener('click', (e) => {
+// Chip click → edit task
+const chip = e.target.closest('[data-chip-id]');
+if (chip) {
+e.stopPropagation();
+const task = allTasks.find(t => t.id === chip.dataset.chipId);
+if (task) openModal(task.date, task);
+return;
+}
+// Cell click (includes the + btn) → add task
+const cell = e.target.closest('[data-cell-date]');
+if (cell) {
+openModal(cell.dataset.cellDate, null);
+}
+});
+}
+
+// Task list: delegate from container
+const taskList = document.getElementById('planner-task-list');
+if (taskList) {
+taskList.addEventListener('click', async (e) => {
+// Toggle
+const toggleEl = e.target.closest('[data-list-toggle]');
+if (toggleEl) {
+const task = allTasks.find(t => t.id === toggleEl.dataset.listToggle);
+if (task) {
+task.completed = !task.completed;
+await updatePlannerTask(task);
+renderPlanner();
+}
+return;
+}
+// Delete
+const delEl = e.target.closest('[data-list-delete]');
+if (delEl) {
+e.stopPropagation();
+const id = delEl.dataset.listDelete;
+if (!confirm('Delete this task?')) return;
+await deletePlannerTask(id);
+allTasks = allTasks.filter(t => t.id !== id);
+showToast('Task deleted', 'info');
+renderPlanner();
+return;
+}
+});
+}
+
+// Modal close
+document.getElementById('planner-modal-close').addEventListener('click', closeModal);
+document.getElementById('planner-modal').addEventListener('click', (e) => {
+if (e.target.id === 'planner-modal') closeModal();
+});
+
+// Modal save
+document.getElementById('planner-save-btn').addEventListener('click', saveTask);
+
+// Keyboard: close modal on Escape
+document.addEventListener('keydown', onEscape);
+
+// Subject dropdown inside modal
+initModalSubjectDropdown();
+}
+
+function onEscape(e) {
+if (e.key === 'Escape') {
+closeModal();
+document.removeEventListener('keydown', onEscape);
+}
+}
+
+function shiftWeek(days) {
+const d = parseDateLocal(currentWeekBase);
+d.setDate(d.getDate() + days);
+currentWeekBase = localDateStr(d);
+renderPlanner();
+}
+
+// ── Modal ────────────────────────────────────────────────────────────────────
+
+function openModal(date, task) {
+const modal = document.getElementById('planner-modal');
+const title = document.getElementById('planner-modal-title');
+
+document.getElementById('planner-task-date').value = date;
+
+if (task) {
+title.textContent = 'Edit Task';
+document.getElementById('planner-task-id').value    = task.id;
+document.getElementById('planner-subject').value    = task.subject;
+document.getElementById('planner-topic').value      = task.topic;
+} else {
+title.textContent = Add Task · ${getDayName(date)} ${getDayNum(date)};
+document.getElementById('planner-task-id').value    = '';
+document.getElementById('planner-subject').value    = '';
+document.getElementById('planner-topic').value      = '';
+}
+
+modal.classList.remove('hidden');
+// Focus first input for accessibility
+setTimeout(() => document.getElementById('planner-subject')?.focus(), 50);
+}
+
+function closeModal() {
+const modal = document.getElementById('planner-modal');
+if (modal) modal.classList.add('hidden');
+}
+
+async function saveTask() {
+const id      = (document.getElementById('planner-task-id').value || '').trim();
+const date    = (document.getElementById('planner-task-date').value || '').trim();
+const subject = (document.getElementById('planner-subject').value || '').trim();
+const topic   = (document.getElementById('planner-topic').value || '').trim();
+
+if (!subject) { showToast('Subject is required', 'error'); return; }
+if (!topic)   { showToast('Topic is required', 'error');   return; }
+if (!date)    { showToast('Date is missing', 'error');     return; }
+
+const saveBtn = document.getElementById('planner-save-btn');
+if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = 'Saving…'; }
+
+try {
+const existing = id ? allTasks.find(t => t.id === id) : null;
+
+} catch (err) {
+console.error('Save task error:', err);
+showToast('Failed to save task', 'error');
+if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = 'Save Task'; }
+}
+}
+
+// ── Subject dropdown inside modal ─────────────────────────────────────────────
+
+function initModalSubjectDropdown() {
+const input    = document.getElementById('planner-subject');
+const dropdown = document.getElementById('planner-subject-dropdown');
+const wrap     = document.getElementById('planner-subject-wrap');
+if (!input || !dropdown || !wrap) return;
+
+function render(filter) {
+const q        = (filter || '').toLowerCase().trim();
+const filtered = allSubjects.filter(s => s.name.toLowerCase().includes(q));
+const hasExact = allSubjects.some(s => s.name.toLowerCase() === q);
+
+}
+
+input.addEventListener('focus', () => { render(input.value); dropdown.classList.remove('hidden'); });
+input.addEventListener('input', () => { render(input.value); dropdown.classList.remove('hidden'); });
+
+_plannerDocClick = (e) => {
+if (!wrap.contains(e.target)) dropdown.classList.add('hidden');
+};
+document.addEventListener('click', _plannerDocClick);
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+function fmtShort(dateStr) {
+return parseDateLocal(dateStr).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
