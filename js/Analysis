@@ -1,0 +1,191 @@
+// js/analysis.js (hardened)
+
+import { getAllSessions } from './db.js';
+import { getLast30Days, minsToHHMM, calcDurationMins, esc } from './utils.js';
+
+// Track Chart instances so we can destroy them before creating new ones
+let _charts = {};
+
+export async function renderAnalysis() {
+const panel = document.getElementById('tab-analysis');
+panel.innerHTML = <div class="loading-spinner"><div class="spinner"></div></div>;
+
+// Destroy any existing charts first (canvas may be gone from DOM after innerHTML)
+_destroyCharts();
+
+const sessions = await getAllSessions();
+const safe     = Array.isArray(sessions) ? sessions : [];
+
+if (safe.length === 0) {
+panel.innerHTML = <div class="empty-state" style="padding-top:60px">
+      <div class="empty-state-icon">📊</div>
+      <div class="empty-state-text">No sessions yet.<br>Add sessions to see your analysis.</div>
+    </div>;
+return;
+}
+
+const last30 = getLast30Days();
+
+// Build a date→sessions map for O(1) lookups
+const byDate = {};
+safe.forEach(s => {
+if (!byDate[s.date]) byDate[s.date] = [];
+byDate[s.date].push(s);
+});
+
+// Per-day totals (minutes and questions) for the last 30 days
+const dailyMins = last30.map(d =>
+(byDate[d] || []).reduce((acc, s) => acc + calcDurationMins(s.startTime, s.endTime), 0)
+);
+const dailyQ = last30.map(d =>
+(byDate[d] || []).reduce((acc, s) => acc + (Number(s.questionCount) || 0), 0)
+);
+
+// Active days = days within last 30 that have at least one session
+const activeDayCount = last30.filter(d => byDate[d] && byDate[d].length > 0).length;
+
+// Average = total ÷ active days (not ÷ 30), guard zero
+const sumMins = dailyMins.reduce((a, b) => a + b, 0);
+const sumQ    = dailyQ.reduce((a, b) => a + b, 0);
+const avgMins = activeDayCount > 0 ? Math.round(sumMins / activeDayCount) : 0;
+const avgQ    = activeDayCount > 0 ? Math.round(sumQ    / activeDayCount) : 0;
+
+// Subject distribution — across ALL sessions (not just last 30)
+const subjectMins = {};
+safe.forEach(s => {
+const dur = calcDurationMins(s.startTime, s.endTime);
+if (dur > 0) {
+subjectMins[s.subject] = (subjectMins[s.subject] || 0) + dur;
+}
+});
+const subjectEntries = Object.entries(subjectMins)
+.sort((a, b) => b[1] - a[1])
+.slice(0, 6);
+
+// All-time totals
+const totalMins = safe.reduce((acc, s) => acc + calcDurationMins(s.startTime, s.endTime), 0);
+const totalQ    = safe.reduce((acc, s) => acc + (Number(s.questionCount) || 0), 0);
+
+panel.innerHTML = `
+<div class="page-pad">
+<div class="section-label" style="margin-bottom:14px">Last 30 Days</div>
+
+`;
+
+// Init charts after DOM is painted
+requestAnimationFrame(() => _initCharts(last30, dailyMins, subjectEntries));
+}
+
+function _destroyCharts() {
+Object.values(charts).forEach(c => {
+try { c.destroy(); } catch () {}
+});
+_charts = {};
+}
+
+function _initCharts(last30, dailyMins, subjectEntries) {
+if (typeof Chart === 'undefined') {
+console.warn('Chart.js not loaded — charts skipped');
+return;
+}
+
+Chart.defaults.color           = '#8990a8';
+Chart.defaults.font.family     = "'DM Sans', sans-serif";
+
+// ── Line chart: last 14 days ───────────────────────────────────────────────
+const show       = 14;
+const showDates  = last30.slice(-show);
+const showMins   = dailyMins.slice(-show);
+
+const lineCanvas = document.getElementById('chart-daily-time');
+if (lineCanvas) {
+const lineCtx = lineCanvas.getContext('2d');
+_charts.line  = new Chart(lineCtx, {
+type : 'line',
+data : {
+labels   : showDates.map(d => {
+const dt = new Date(d + 'T00:00:00');
+return dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}),
+datasets : [{
+label           : 'Hours',
+data            : showMins.map(m => parseFloat((m / 60).toFixed(2))),
+borderColor     : '#4f9eff',
+backgroundColor : 'rgba(79,158,255,0.08)',
+borderWidth     : 2,
+pointRadius     : 3,
+pointBackgroundColor : '#4f9eff',
+tension         : 0.4,
+fill            : true,
+}],
+},
+options: {
+responsive          : true,
+maintainAspectRatio : false,
+plugins: {
+legend  : { display: false },
+tooltip : {
+backgroundColor : '#1e2230',
+borderColor     : '#323848',
+borderWidth     : 1,
+titleColor      : '#e8ecf4',
+bodyColor       : '#8990a8',
+callbacks       : {
+label: ctx =>  ${minsToHHMM(Math.round(ctx.raw * 60))},
+},
+},
+},
+scales: {
+x: {
+grid  : { color: 'rgba(37,42,56,0.6)' },
+ticks : { maxTicksLimit: 7, font: { size: 9 } },
+border: { display: false },
+},
+y: {
+grid      : { color: 'rgba(37,42,56,0.6)' },
+ticks     : { font: { size: 9 }, callback: v => ${v}h },
+beginAtZero: true,
+border    : { display: false },
+},
+},
+},
+});
+}
+
+// ── Doughnut chart: subject distribution ──────────────────────────────────
+if (subjectEntries.length === 0) return;
+
+const pieColors = ['#4f9eff','#3ecf8e','#ff9f43','#b06eff','#ff5c5c','#00d4ff'];
+const pieCanvas = document.getElementById('chart-subjects');
+if (pieCanvas) {
+const pieCtx  = pieCanvas.getContext('2d');
+_charts.pie   = new Chart(pieCtx, {
+type : 'doughnut',
+data : {
+labels   : subjectEntries.map(([s]) => s),
+datasets : [{
+data            : subjectEntries.map(([, m]) => m),
+backgroundColor : pieColors.slice(0, subjectEntries.length),
+borderColor     : '#14161d',
+borderWidth     : 3,
+hoverOffset     : 4,
+}],
+},
+options: {
+responsive          : true,
+maintainAspectRatio : false,
+plugins: {
+legend  : { display: false },
+tooltip : {
+backgroundColor : '#1e2230',
+borderColor     : '#323848',
+borderWidth     : 1,
+callbacks       : { label: ctx =>  ${minsToHHMM(ctx.raw)} },
+},
+},
+cutout: '65%',
+},
+});
+
+}
+  }
