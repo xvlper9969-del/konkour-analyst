@@ -1,0 +1,60 @@
+// js/dashboard.js (hardened)
+
+import { getSessionsByDate, getPlannerByDate } from './db.js';
+import { today, minsToHHMM, calcDurationMins, formatDate, esc } from './utils.js';
+
+export async function renderDashboard() {
+const panel = document.getElementById('tab-dashboard');
+panel.innerHTML = <div class="loading-spinner"><div class="spinner"></div></div>;
+
+const todayStr = today();
+const [sessions, tasks] = await Promise.all([
+getSessionsByDate(todayStr),
+getPlannerByDate(todayStr),
+]);
+
+// Guard: ensure arrays even if DB returns unexpected values
+const safeSessions = Array.isArray(sessions) ? sessions : [];
+const safeTasks    = Array.isArray(tasks)    ? tasks    : [];
+
+const totalMins = safeSessions.reduce((acc, s) => acc + calcDurationMins(s.startTime, s.endTime), 0);
+const totalQ    = safeSessions.reduce((acc, s) => acc + (Number(s.questionCount) || 0), 0);
+const completed = safeTasks.filter(t => t.completed).length;
+const remaining = safeTasks.length - completed;
+const pct       = safeTasks.length > 0 ? Math.round((completed / safeTasks.length) * 100) : 0;
+
+const hour     = new Date().getHours();
+const greeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
+
+panel.innerHTML = `
+<div class="dash-greeting">
+<div class="dash-greeting-text">${greeting} 👋</div>
+      <div class="dash-greeting-sub">${formatDate(todayStr)}</div>
+</div>
+
+`;
+}
+
+function renderSessionsList(sessions) {
+if (sessions.length === 0) {
+return <div class="empty-state">
+      <div class="empty-state-icon">📚</div>
+      <div class="empty-state-text">No sessions logged today.<br>Tap <b>+ Session</b> to start tracking.</div>
+    </div>;
+}
+const sorted = [...sessions].sort((a, b) => (a.startTime || '').localeCompare(b.startTime || ''));
+return sorted.map(s => {
+const dur = calcDurationMins(s.startTime, s.endTime);
+return <div class="session-item">
+      <div class="session-item-dot ${esc(s.activityType)}"></div>
+      <div class="session-item-info">
+        <div class="session-item-subject">${esc(s.subject)}</div>
+        <div class="session-item-meta">${esc(s.topic)}${s.questionCount ?  · ${Number(s.questionCount)}Q : ''}</div>
+      </div>
+      <div class="session-item-time">
+        ${esc(s.startTime)}–${esc(s.endTime)}<br>
+        <span style="color:var(--accent)">${minsToHHMM(dur)}</span>
+      </div>
+    </div>;
+}).join('');
+}
